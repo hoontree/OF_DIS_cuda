@@ -21,6 +21,10 @@
 #include "patchgrid.h"
 #include "refine_variational.h"
 
+#ifdef USE_CUDA
+#include "patchgrid_cuda.h"
+#endif
+
 
 using std::cout;
 using std::endl;
@@ -59,8 +63,14 @@ namespace OFC
                   const int verbosity_in)
   : im_ao(im_ao_in), im_ao_dx(im_ao_dx_in), im_ao_dy(im_ao_dy_in),  
     im_bo(im_bo_in), im_bo_dx(im_bo_dx_in), im_bo_dy(im_bo_dy_in)
+#ifdef USE_CUDA
+    , ctx(nullptr), stream(0)
+#endif
 {
- 
+  #ifdef USE_CUDA
+  ctx = CreatePatchGridContext();
+  cudaStreamCreate(&stream);
+  #endif
   
   #ifdef WITH_OPENMP
     if (verbosity_in>1)
@@ -157,12 +167,20 @@ namespace OFC
     cpr[i].camlr = 1;
     
     flow_fw[i]   = new float[op.nop * cpl[i].width * cpl[i].height]; 
-    grid_fw[i]   = new OFC::PatGridClass(&(cpl[i]), &(cpr[i]), &op);
+    grid_fw[i]   = new OFC::PatGridClass(&(cpl[i]), &(cpr[i]), &op
+#ifdef USE_CUDA
+    , ctx, stream
+#endif
+    );
    
     if (op.usefbcon) // for merging forward and backward flow 
     {
       flow_bw[i] = new float[op.nop * cpr[i].width * cpr[i].height];
-      grid_bw[i] = new OFC::PatGridClass(&(cpr[i]), &(cpl[i]), &op);
+      grid_bw[i] = new OFC::PatGridClass(&(cpr[i]), &(cpl[i]), &op
+#ifdef USE_CUDA
+      , ctx, stream
+#endif
+      );
       
       // Make grids known to each other, necessary for AggregateFlowDense();
       grid_fw[i]->SetComplGrid( grid_bw[i] );
@@ -360,6 +378,13 @@ namespace OFC
   }
 
   
+}
+
+OFClass::~OFClass() {
+  #ifdef USE_CUDA
+  DestroyPatchGridContext(ctx);
+  if (stream) cudaStreamDestroy(stream);
+  #endif
 }
 
 // // needed for verbosity >= 3, DISVISUAL

@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <valarray>
 
 #include <thread>
@@ -19,6 +20,9 @@
 #include "patch.h"
 #include "patchgrid.h"
 
+#ifdef USE_CUDA
+#include "patchgrid_cuda.h"
+#endif
 
 using std::cout;
 using std::endl;
@@ -29,13 +33,20 @@ namespace OFC
 {
     
   PatGridClass::PatGridClass(
-    const camparam* cpt_in,
-    const camparam* cpo_in,
-    const optparam* op_in)
+    const camparam* cpt_in, // cpr[i]
+    const camparam* cpo_in, // cpl[i]
+    const optparam* op_in // op
+#ifdef USE_CUDA
+    , PatchGridContext* ctx_in, cudaStream_t stream_in
+#endif
+    ) 
   : 
     cpt(cpt_in),
     cpo(cpo_in),
     op(op_in)
+#ifdef USE_CUDA
+    , ctx(ctx_in), stream(stream_in)
+#endif
   {
 
   // Generate grid on current scale
@@ -133,11 +144,137 @@ void PatGridClass::SetTargetImage(const float * im_bo_in, const float * im_bo_dx
 
 void PatGridClass::Optimize()
 {
+#ifdef USE_CUDA
+    // Phase 1: CUDA validation + CPU fallback
+    // printf("PatGridClass::Optimize: Phase 1 - CUDA validation\n");
+
+    // Prepare data for CUDA
+    std::vector<float> h_pt_ref(nopatches * 2);
+    std::vector<float> h_p_init(nopatches * 2);
+
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < nopatches; ++i) {
+        h_pt_ref[2*i] = pt_ref[i][0];
+        h_pt_ref[2*i+1] = pt_ref[i][1];
+        
+        #if (SELECTMODE==1)
+        h_p_init[2*i] = p_init[i][0];
+        h_p_init[2*i+1] = p_init[i][1];
+        #else
+        h_p_init[2*i] = p_init[i][0];
+        h_p_init[2*i+1] = 0.0f;
+        #endif
+    }
+
+    int noc = 1; // Default to 1 channel
+    #if (SELECTCHANNEL==3)
+    noc = 3;
+    #endif
+
+    // Prepare output buffer
+    std::vector<float> h_p_out(nopatches * 2);
+
+    // --- DEBUGGING CODE START ---
+    // Compare Patch 0 with CPU execution
+    int max_iter = op->max_iter;
+    DebugIterData* d_debug_iter = nullptr;
+    std::vector<DebugIterData> h_debug_cuda(max_iter);
+    std::vector<DebugIterData> h_debug_cpu(max_iter);
+
+    if (nopatches > 0) {
+        // Allocate device memory for debug
+        cudaMalloc(&d_debug_iter, max_iter * sizeof(DebugIterData));
+        cudaMemset(d_debug_iter, 0, max_iter * sizeof(DebugIterData));
+    }
+
+    // Call CUDA kernel launcher
+    LaunchOptimizeKernelsCUDA(
+        ctx, stream,
+        nopatches, nopw, noph,
+        im_ao_eg->data(), im_ao_dx_eg->data(), im_ao_dy_eg->data(),
+        im_bo_eg->data(), im_bo_dx_eg->data(), im_bo_dy_eg->data(),
+        h_pt_ref.data(),
+        h_p_init.data(),
+        h_p_out.data(),
+        cpt->width, cpt->height, cpt->imgpadding,
+        op->max_iter, op->min_iter, op->p_samp_s, noc,
+        op->dp_thresh, op->dr_thresh, op->res_thresh, op->outlierthresh, op->costfct,
+        cpt->tmp_lb, cpt->tmp_ubw, cpt->tmp_ubh,
+        d_debug_iter // Pass debug buffer
+    );
+
+    // Update patches with CUDA results
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < nopatches; ++i) {
+        #if (SELECTMODE==1)
+        Eigen::Vector2f disp(h_p_out[2*i], h_p_out[2*i+1]);
+        pat[i]->SetDisplacement(disp);
+        #else
+        Eigen::Matrix<float, 1, 1> disp;
+        disp[0] = h_p_out[2*i];
+        pat[i]->SetDisplacement(disp);
+        #endif
+    }
+
+    if (nopatches > 0 && d_debug_iter) {
+        // Copy debug data back
+        cudaMemcpy(h_debug_cuda.data(), d_debug_iter, max_iter * sizeof(DebugIterData), cudaMemcpyDeviceToHost);
+        cudaFree(d_debug_iter);
+
+        // Run CPU version for patch 0
+        // We need to reset patch 0 to initial state?
+        // OptimizeDebug resets it.
+        // We need to ensure we pass the same p_init.
+        // h_p_init contains the init values.
+        // For patch 0:
+        #if (SELECTMODE==1)
+        Eigen::Vector2f p_in_0(h_p_init[0], h_p_init[1]);
+        pat[0]->OptimizeStart(p_in_0); // Initialize
+        #else
+        Eigen::Matrix<float, 1, 1> p_in_0; p_in_0[0] = h_p_init[0];
+        pat[0]->OptimizeStart(p_in_0);
+        #endif
+        
+        pat[0]->OptimizeDebug(h_debug_cpu.data(), max_iter);
+
+        // Compare
+        printf("\n--- DEBUG COMPARISON (Patch 0) ---\n");
+        printf("Iter | CUDA (px, py) | CPU (px, py) | Diff\n");
+        for (int k = 0; k < max_iter; ++k) {
+            if (h_debug_cuda[k].iter == 0 && h_debug_cpu[k].iter == 0) break; // Stop if both finished
+            
+            float cuda_px = h_debug_cuda[k].p_x;
+            float cuda_py = h_debug_cuda[k].p_y;
+            float cpu_px = h_debug_cpu[k].p_x;
+            float cpu_py = h_debug_cpu[k].p_y;
+            
+            float diff_x = fabsf(cuda_px - cpu_px);
+            float diff_y = fabsf(cuda_py - cpu_py);
+            
+            printf("%4d | (%8.5f, %8.5f) | (%8.5f, %8.5f) | (%8.5e, %8.5e)\n", 
+                   k+1, cuda_px, cuda_py, cpu_px, cpu_py, diff_x, diff_y);
+                   
+            if (diff_x > 1e-4 || diff_y > 1e-4) {
+                printf("  MISMATCH! CUDA SD: (%f, %f), CPU SD: (%f, %f)\n", 
+                       h_debug_cuda[k].sd_x, h_debug_cuda[k].sd_y, h_debug_cpu[k].sd_x, h_debug_cpu[k].sd_y);
+                printf("  MISMATCH! CUDA DP: (%f, %f), CPU DP: (%f, %f)\n", 
+                       h_debug_cuda[k].dp_x, h_debug_cuda[k].dp_y, h_debug_cpu[k].dp_x, h_debug_cpu[k].dp_y);
+                 printf("  MISMATCH! CUDA HES: (%f, %f, %f), CPU HES: (%f, %f, %f)\n", 
+                       h_debug_cuda[k].hes_xx, h_debug_cuda[k].hes_xy, h_debug_cuda[k].hes_yy,
+                       h_debug_cpu[k].hes_xx, h_debug_cpu[k].hes_xy, h_debug_cpu[k].hes_yy);
+            }
+        }
+        printf("----------------------------------\n");
+    }
+    // --- DEBUGGING CODE END ---
+#else
+    // Pure CPU path
     #pragma omp parallel for schedule(dynamic,10)
     for (int i = 0; i < nopatches; ++i)
     {
-      pat[i]->OptimizeIter(p_init[i], true); // optimize until convergence  
+      pat[i]->OptimizeIter(p_init[i], true); // optimize until convergence
     }
+#endif
 }  
 
 // void PatGridClass::OptimizeAndVisualize(const float sc_fct_tmp) // needed for verbosity >= 3, DISVISUAL
@@ -295,8 +432,8 @@ void PatGridClass::AggregateFlowDense(float *flowout) const
           Eigen::Matrix<float, 1, 1> flnew;
           #endif
         
-          const Eigen::Vector2f rppos = cg->pat[ip]->GetPointPos(); // get patch position after optimization
-          const float * pweight = cg->pat[ip]->GetpWeightPtr(); // use image error as weight
+          const Eigen::Vector2f rppos = cg->GetQuePatchPos(ip); // get patch position after optimization
+          const float * pweight = cg->GetQuePatchWeightPtr(ip); // use image error as weight
           
           Eigen::Vector2f resid;
 
@@ -328,11 +465,11 @@ void PatGridClass::AggregateFlowDense(float *flowout) const
               {
                 
                 #if (SELECTCHANNEL==1 | SELECTCHANNEL==2)  // single channel/gradient image
-                float absw = 1.0f /  (float)(std::max(op->minerrval  ,*pweight));
+                float absw = 1.0f /  (float)(::std::max((float)op->minerrval  ,(float)*pweight));
                 #else  // RGB
-                float absw = (float)(std::max(op->minerrval  ,*pweight)); ++pweight;
-                      absw+= (float)(std::max(op->minerrval  ,*pweight)); ++pweight;
-                      absw+= (float)(std::max(op->minerrval  ,*pweight));
+                float absw = (float)(::std::max((float)op->minerrval  ,(float)*pweight)); ++pweight;
+                      absw+= (float)(::std::max((float)op->minerrval  ,(float)*pweight)); ++pweight;
+                      absw+= (float)(::std::max((float)op->minerrval  ,(float)*pweight));
                 absw = 1.0f / absw;
                 #endif
               

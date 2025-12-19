@@ -1,0 +1,28 @@
+# Build and Binary
+build/
+build_cpu/
+build_cuda/
+*.o
+*.obj
+*.so
+*.a
+*.exe
+run_dense
+run_dense_cuda
+run_dense_parallel
+
+# Data and Artifacts
+*.flo
+*.png
+__data_TEMP__.bin
+benchmark/*.zip
+benchmark/Sintel/
+benchmark/KITTI/
+benchmark/results/
+
+# IDE and System
+.vscode/
+.idea/
+.DS_Store
+.claude/
+.agent/

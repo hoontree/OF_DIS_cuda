@@ -12,6 +12,10 @@
 
 #include "oflow.h" // For camera intrinsic and opt. parameter struct
 
+#ifdef USE_CUDA
+#include "patchgrid_cuda.h" // For DebugIterData
+#endif
+
 namespace OFC
 {
 
@@ -68,8 +72,31 @@ public:
   void OptimizeIter(const Eigen::Matrix<float, 1, 1> p_in_arg, const bool untilconv);
   #endif  
 
+  #if (SELECTMODE==1) // Optical Flow
+  void OptimizeStart(const Eigen::Vector2f p_in_arg);
+  #else // Depth from Stereo
+  void OptimizeStart(const Eigen::Matrix<float, 1, 1> p_in_arg);  
+  #endif
+
+#ifdef USE_CUDA
+  void OptimizeDebug(DebugIterData* debug_data, int max_iter);
+#endif
+
   inline const bool isConverged() const { return pc->hasconverged; }
+  inline const int GetIter() const { return pc->cnt; }
   inline const bool hasOptStarted() const { return pc->hasoptstarted; }
+  inline const float GetMares() const { return pc->mares; }
+  #if (SELECTMODE==1)
+  inline const Eigen::Matrix<float, 2, 2> GetHessian() const { return pc->Hes; }
+  inline const Eigen::Vector2f GetDeltaP() const { return pc->delta_p; }
+  inline const Eigen::Vector2f GetDisplacement() const { return pc->p_iter; }
+  inline void SetDisplacement(const Eigen::Vector2f& d) { pc->p_iter = d; }
+  #else
+  inline const Eigen::Matrix<float, 1, 1> GetHessian() const { return pc->Hes; }
+  inline const Eigen::Matrix<float, 1, 1> GetDeltaP() const { return pc->delta_p; }
+  inline const Eigen::Matrix<float, 1, 1> GetDisplacement() const { return pc->p_iter; }
+  inline void SetDisplacement(const Eigen::Matrix<float, 1, 1>& d) { pc->p_iter = d; }
+  #endif
   inline const Eigen::Vector2f GetPointPos() const { return pc->pt_iter; }  // get current iteration patch position (in this frame's opposite camera for OF, Depth)
   inline const bool IsValid() const { return (!pc->invalid) ; }
   inline const float * GetpWeightPtr() const {return (float*) pc->pweight.data(); } // Return data pointer to image error patch, used in efficient indexing for densification in patchgrid class
@@ -88,11 +115,6 @@ public:
 
 private:
   
-  #if (SELECTMODE==1) // Optical Flow
-  void OptimizeStart(const Eigen::Vector2f p_in_arg);
-  #else // Depth from Stereo
-  void OptimizeStart(const Eigen::Matrix<float, 1, 1> p_in_arg);  
-  #endif
   
   void OptimizeComputeErrImg();
   void paramtopt();

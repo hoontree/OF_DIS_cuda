@@ -6,6 +6,10 @@
 #include <iostream>
 #include <sys/time.h>
 #include <fstream>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <omp.h>
     
 #include "oflow.h"
 
@@ -188,18 +192,11 @@ int AutoFirstScaleSelect(int imgwidth, int fratio, int patchsize)
   return std::max(0,(int)std::floor(log2((2.0f*(float)imgwidth) / ((float)fratio * (float)patchsize))));
 }
 
-int main( int argc, char** argv )
-{
+void ProcessPair(string imgfile_ao, string imgfile_bo, string outfile, int sel_oppoint, bool verbose) {
   struct timeval tv_start_all, tv_end_all;
-  gettimeofday(&tv_start_all, NULL);
-  
-  
+  if (verbose) gettimeofday(&tv_start_all, NULL);
   
   // *** Parse and load input images
-  char *imgfile_ao = argv[1];
-  char *imgfile_bo = argv[2];
-  char *outfile = argv[3];
-   
   cv::Mat img_ao_mat, img_bo_mat, img_tmp;
   int rpyrtype, nochannels, incoltype;
   #if (SELECTCHANNEL==1 | SELECTCHANNEL==2) // use Intensity or Gradient image      
@@ -218,93 +215,52 @@ int main( int argc, char** argv )
   int width_org = sz.width;   // unpadded original image size
   int height_org = sz.height;  // unpadded original image size 
   
-  
-  
-  
   // *** Parse rest of parameters, See oflow.h for definitions.
   int lv_f, lv_l, maxiter, miniter, patchsz, patnorm, costfct, tv_innerit, tv_solverit, verbosity;
   float mindprate, mindrrate, minimgerr, poverl, tv_alpha, tv_gamma, tv_delta, tv_sor;
   bool usefbcon, usetvref;
-  //bool hasinfile; // initialization flow file
-  //char *infile = nullptr;
   
-  if (argc<=5)  // Use operation point X, set scales automatically
-  {
-    mindprate = 0.05; mindrrate = 0.95; minimgerr = 0.0;    
-    usefbcon = 0; patnorm = 1; costfct = 0; 
-    tv_alpha = 10.0; tv_gamma = 10.0; tv_delta = 5.0;
-    tv_innerit = 1; tv_solverit = 3; tv_sor = 1.6;
-    verbosity = 2; // Default: Plot detailed timings
-        
-    int fratio = 5; // For automatic selection of coarsest scale: 1/fratio * width = maximum expected motion magnitude in image. Set lower to restrict search space.
-    
-    int sel_oppoint = 2; // Default operating point
-    if (argc==5)         // Use provided operating point
-      sel_oppoint=atoi(argv[4]);
+  mindprate = 0.05; mindrrate = 0.95; minimgerr = 0.0;    
+  usefbcon = 0; patnorm = 1; costfct = 0; 
+  tv_alpha = 10.0; tv_gamma = 10.0; tv_delta = 5.0;
+  tv_innerit = 1; tv_solverit = 3; tv_sor = 1.6;
+  verbosity = verbose ? 2 : 0; 
       
-    switch (sel_oppoint)
-    {
-      case 1:
-        patchsz = 8; poverl = 0.3; 
-        lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
-        lv_l = std::max(lv_f-2,0); maxiter = 16; miniter = 16; 
-        usetvref = 0; 
-        break;
-      case 3:
-        patchsz = 12; poverl = 0.75; 
-        lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
-        lv_l = std::max(lv_f-4,0); maxiter = 16; miniter = 16; 
-        usetvref = 1; 
-        break;
-      case 4:
-        patchsz = 12; poverl = 0.75; 
-        lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
-        lv_l = std::max(lv_f-5,0); maxiter = 128; miniter = 128; 
-        usetvref = 1; 
-        break;        
-      case 2:
-      default:
-        patchsz = 8; poverl = 0.4; 
-        lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
-        lv_l = std::max(lv_f-2,0); maxiter = 12; miniter = 12; 
-        usetvref = 1; 
-        break;
-
-    }
-  }
-  else //  Parse explicitly provided parameters
+  int fratio = 5; 
+  
+  switch (sel_oppoint)
   {
-    int acnt = 4; // Argument counter
-    lv_f = atoi(argv[acnt++]);
-    lv_l = atoi(argv[acnt++]);
-    maxiter = atoi(argv[acnt++]);
-    miniter = atoi(argv[acnt++]);
-    mindprate = atof(argv[acnt++]);
-    mindrrate = atof(argv[acnt++]);
-    minimgerr = atof(argv[acnt++]);
-    patchsz = atoi(argv[acnt++]);
-    poverl = atof(argv[acnt++]);
-    usefbcon = atoi(argv[acnt++]);
-    patnorm = atoi(argv[acnt++]);
-    costfct = atoi(argv[acnt++]);
-    usetvref = atoi(argv[acnt++]);
-    tv_alpha = atof(argv[acnt++]);
-    tv_gamma = atof(argv[acnt++]);
-    tv_delta = atof(argv[acnt++]);
-    tv_innerit = atoi(argv[acnt++]);
-    tv_solverit = atoi(argv[acnt++]);
-    tv_sor = atof(argv[acnt++]);    
-    verbosity = atoi(argv[acnt++]);
-    //hasinfile = (bool)atoi(argv[acnt++]);   // initialization flow file
-    //if (hasinfile) infile = argv[acnt++];  
+    case 1:
+      patchsz = 8; poverl = 0.3; 
+      lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
+      lv_l = std::max(lv_f-2,0); maxiter = 16; miniter = 16; 
+      usetvref = 0; 
+      break;
+    case 3:
+      patchsz = 12; poverl = 0.75; 
+      lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
+      lv_l = std::max(lv_f-4,0); maxiter = 16; miniter = 16; 
+      usetvref = 1; 
+      break;
+    case 4:
+      patchsz = 12; poverl = 0.75; 
+      lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
+      lv_l = std::max(lv_f-5,0); maxiter = 128; miniter = 128; 
+      usetvref = 1; 
+      break;        
+    case 2:
+    default:
+      patchsz = 8; poverl = 0.4; 
+      lv_f = AutoFirstScaleSelect(width_org, fratio, patchsz);
+      lv_l = std::max(lv_f-2,0); maxiter = 12; miniter = 12; 
+      usetvref = 1; 
+      break;
+
   }
 
-  
-  
   // *** Pad image such that width and height are restless divisible on all scales (except last)
   int padw=0, padh=0;
-  int scfct = pow(2,lv_f); // enforce restless division by this number on coarsest scale
-  //if (hasinfile) scfct = pow(2,lv_f+1); // if initialization file is given, make sure that size is restless divisible by 2^(lv_f+1) !
+  int scfct = pow(2,lv_f); 
   int div = sz.width % scfct;
   if (div>0) padw = scfct - div;
   div = sz.height % scfct;
@@ -324,9 +280,6 @@ int main( int argc, char** argv )
     printf("TIME (Image loading     ) (ms): %3g\n", tt);
     gettimeofday(&tv_start_all, NULL);
   }
-  
-  
-  
   
   //  *** Generate scale pyramides
   img_ao_mat.convertTo(img_ao_fmat, CV_32F); // convert to float
@@ -357,41 +310,12 @@ int main( int argc, char** argv )
     printf("TIME (Pyramide+Gradients) (ms): %3g\n", tt);
   }
 
-  
-//     // Read Initial Truth flow (if available)
-//     float * initptr = nullptr;
-//     cv::Mat flowinit;
-//     if (hasinfile)
-//     {
-//       #if (SELECTMODE==1)
-//       flowinit.create(height_org, width_org, CV_32FC2);
-//       #else
-//       flowinit.create(height_org, width_org, CV_32FC1);
-//       #endif
-//       
-//       ReadFlowFile(flowinit, infile);
-//         
-//       // padding to ensure divisibility by 2
-//       if (padh>0 || padw>0)
-//         copyMakeBorder(flowinit,flowinit,floor((float)padh/2.0f),ceil((float)padh/2.0f),floor((float)padw/2.0f),ceil((float)padw/2.0f),cv::BORDER_REPLICATE);
-//       
-//       // resizing to coarsest scale - 1, since the array is upsampled at .5 in the code
-//       float sc_fct = pow(2,-lv_f-1);
-//       flowinit *= sc_fct;
-//       cv::resize(flowinit, flowinit, cv::Size(), sc_fct, sc_fct , cv::INTER_AREA); 
-//       
-//       initptr = (float*)flowinit.data;
-//     }
-
-  
-  
-  
   //  *** Run main optical flow / depth algorithm
-  float sc_fct = pow(2,lv_l);
+  float sc_fct_val = pow(2,lv_l);
   #if (SELECTMODE==1)
-  cv::Mat flowout(sz.height / sc_fct , sz.width / sc_fct, CV_32FC2); // Optical Flow
+  cv::Mat flowout(sz.height / sc_fct_val , sz.width / sc_fct_val, CV_32FC2); // Optical Flow
   #else
-  cv::Mat flowout(sz.height / sc_fct , sz.width / sc_fct, CV_32FC1); // Depth
+  cv::Mat flowout(sz.height / sc_fct_val , sz.width / sc_fct_val, CV_32FC1); // Depth
   #endif       
   
   OFC::OFClass ofc(img_ao_pyr, img_ao_dx_pyr, img_ao_dy_pyr, 
@@ -407,13 +331,11 @@ int main( int argc, char** argv )
 
   if (verbosity > 1) gettimeofday(&tv_start_all, NULL);
       
-  
-  
   // *** Resize to original scale, if not run to finest level
   if (lv_l != 0)
   {
-    flowout *= sc_fct;
-    cv::resize(flowout, flowout, cv::Size(), sc_fct, sc_fct , cv::INTER_LINEAR);
+    flowout *= sc_fct_val;
+    cv::resize(flowout, flowout, cv::Size(), sc_fct_val, sc_fct_val , cv::INTER_LINEAR);
   }
   
   // If image was padded, remove padding before saving to file
@@ -421,9 +343,9 @@ int main( int argc, char** argv )
 
   // Save Result Image    
   #if (SELECTMODE==1)
-  SaveFlowFile(flowout, outfile);
+  SaveFlowFile(flowout, outfile.c_str());
   #else
-  SavePFMFile(flowout, outfile);      
+  SavePFMFile(flowout, outfile.c_str());      
   #endif
 
   if (verbosity > 1)
@@ -432,7 +354,83 @@ int main( int argc, char** argv )
     double tt = (tv_end_all.tv_sec-tv_start_all.tv_sec)*1000.0f + (tv_end_all.tv_usec-tv_start_all.tv_usec)/1000.0f;
     printf("TIME (Saving flow file  ) (ms): %3g\n", tt);
   }
-    
+}
+
+int main( int argc, char** argv )
+{
+  if (argc < 4) {
+      cout << "Usage: " << argv[0] << " img1 img2 out [oppoint]" << endl;
+      cout << "   OR: " << argv[0] << " list_file out_dir [oppoint]" << endl;
+      return 1;
+  }
+
+  string arg1 = argv[1];
+  bool is_list = (arg1.size() > 4 && arg1.substr(arg1.size()-4) == ".txt");
+
+  if (is_list) {
+      string list_file = argv[1];
+      string out_dir = argv[2];
+      int oppoint = (argc >= 4) ? atoi(argv[3]) : 2;
+
+      ifstream file(list_file);
+      if (!file.is_open()) {
+          cerr << "Error opening list file: " << list_file << endl;
+          return 1;
+      }
+
+      struct PairInfo {
+          string img1;
+          string img2;
+          string out;
+      };
+      vector<PairInfo> pairs;
+      string line;
+      while (getline(file, line)) {
+          if (line.empty()) continue;
+          stringstream ss(line);
+          string img1, img2;
+          if (!(ss >> img1 >> img2)) continue;
+          
+          // Generate output filename
+          // Assuming img1 is like .../frame_0001.png
+          // We want frame_0001_to_frame_0002.flo
+          size_t last_slash = img1.find_last_of("/\\");
+          string name1 = (last_slash == string::npos) ? img1 : img1.substr(last_slash + 1);
+          size_t dot = name1.find_last_of(".");
+          if (dot != string::npos) name1 = name1.substr(0, dot);
+
+          last_slash = img2.find_last_of("/\\");
+          string name2 = (last_slash == string::npos) ? img2 : img2.substr(last_slash + 1);
+          dot = name2.find_last_of(".");
+          if (dot != string::npos) name2 = name2.substr(0, dot);
+
+          string out = out_dir + "/" + name1 + "_to_" + name2 + ".flo";
+          pairs.push_back({img1, img2, out});
+      }
+
+      cout << "Processing " << pairs.size() << " pairs in parallel..." << endl;
+
+      #pragma omp parallel for schedule(dynamic)
+      for (size_t i = 0; i < pairs.size(); ++i) {
+          // In batch mode, disable verbose output to avoid interleaving
+          ProcessPair(pairs[i].img1, pairs[i].img2, pairs[i].out, oppoint, false);
+          
+          // Print progress atomically?
+          #pragma omp critical
+          {
+              cout << "Processed: " << pairs[i].out << endl;
+          }
+      }
+
+  } else {
+      string img1 = argv[1];
+      string img2 = argv[2];
+      string out = argv[3];
+      int oppoint = (argc >= 5) ? atoi(argv[4]) : 2;
+      
+      ProcessPair(img1, img2, out, oppoint, true);
+  }
+
   return 0;
 }
 

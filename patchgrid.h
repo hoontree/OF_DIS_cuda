@@ -9,6 +9,11 @@
 #include "oflow.h" // For camera intrinsic and opt. parameter struct
 
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+struct PatchGridContext;
+#endif
+
 namespace OFC
 {
   
@@ -18,7 +23,11 @@ class PatGridClass
 public:
   PatGridClass(const camparam* cpt_in,
                const camparam* cpo_in,
-               const optparam* op_in);  
+               const optparam* op_in
+#ifdef USE_CUDA
+               , PatchGridContext* ctx_in = nullptr, cudaStream_t stream_in = 0
+#endif
+               );  
 
   ~PatGridClass();
   
@@ -38,10 +47,11 @@ public:
   inline const int GetNoPatches() const { return nopatches; }  
   inline const int GetNoph() const { return noph; }
   inline const int GetNopw() const { return nopw; }
- 
+  
   inline const Eigen::Vector2f GetRefPatchPos(int i) const { return pt_ref[i]; } // Get reference  patch position
   inline const Eigen::Vector2f GetQuePatchPos(int i) const { return pat[i]->GetPointPos(); } // Get target/query patch position
   inline const Eigen::Vector2f GetQuePatchDis(int i) const { return pt_ref[i]-pat[i]->GetPointPos(); } // Get query patch displacement from reference patch
+  inline const float* GetQuePatchWeightPtr(int i) const { return pat[i]->GetpWeightPtr(); }
   
 private:
    
@@ -69,6 +79,11 @@ private:
   #endif
 
   const PatGridClass * cg=nullptr;  
+
+#ifdef USE_CUDA
+  PatchGridContext* ctx;
+  cudaStream_t stream;
+#endif
 };
 
 

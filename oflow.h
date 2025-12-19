@@ -4,8 +4,15 @@
 #ifndef OFC_HEADER
 #define OFC_HEADER
 
+#include <vector>
+
 using std::cout;
 using std::endl;
+
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+struct PatchGridContext;
+#endif
 
 namespace OFC
 {
@@ -110,6 +117,9 @@ public:
           const float tv_sor_in,
           const int verbosity_in);
   
+  // Destructor needed to clean up CUDA resources
+  ~OFClass();
+
 private:
 
   // needed for verbosity >= 3, DISVISUAL
@@ -119,7 +129,12 @@ private:
   const float ** im_bo, ** im_bo_dx, ** im_bo_dy;
   
   optparam op;                    // Struct for pptimization parameters
-  std::vector<camparam> cpl, cpr; // Struct (for each scale) for camera/image parameter
+  ::std::vector<camparam> cpl, cpr; // Struct (for each scale) for camera/image parameter
+
+#ifdef USE_CUDA
+  PatchGridContext* ctx;
+  cudaStream_t stream;
+#endif
 };
 
 
